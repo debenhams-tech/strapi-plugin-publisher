@@ -1,6 +1,7 @@
 'use strict';
 
 const _ = require('lodash');
+const { errors } = require('@strapi/utils');
 const { getPluginService } = require('../utils/getPluginService');
 const { getPluginEntityUid } = require('../utils/getEntityUId');
 const { getDeepPopulate } = require('../utils/populate');
@@ -8,18 +9,25 @@ const { createContentTypePresenceSchema } = require('./createContentTypePresence
 
 const actionUId = getPluginEntityUid('action');
 
+const SAVE_BLOCKED_MESSAGE =
+	'Cannot save: a publish is scheduled for this entry, and one or more required fields are missing or empty.';
+
 // entityValidator's own required checks (`notNil`/`notNull`, from
 // @strapi/utils) only reject null/undefined, not an empty string - and for
 // dynamic zones/repeatable components without an explicit `min`, its
 // required check is `value !== null || value !== undefined`, which is
 // *always true* (an `||` where an `&&` was clearly intended), so an empty
-// array silently passes too. `createContentTypePresenceSchema` models real
-// "is this required thing actually filled in" semantics (yup's own
-// `.required()` correctly rejects both), so it's used here to find what
-// entityValidator would miss and blank those specific values out first -
-// entityValidator's *own* check then (correctly) treats them as missing.
+// array silently passes too. Media attributes get no required check at all:
+// `createAttributeValidator` special-cases `isMediaAttribute` to a bare
+// `yup.mixed()` with no `addRequiredValidation` call, unlike every other
+// branch. `createContentTypePresenceSchema` models real "is this required
+// thing actually filled in" semantics (yup's own `.required()` correctly
+// rejects all three), so it's used here to find what entityValidator would
+// miss and blank those specific values out first - entityValidator's *own*
+// check then (correctly) treats them as missing, for everything except
+// media, which it never checks regardless of value.
 //
-// This is deliberately *not* used to throw our own error directly:
+// Blanking is deliberately preferred over throwing our own error directly:
 // constructing one would use this plugin's own copy of @strapi/utils, which
 // - when npm link'ed for local development - is a different module instance
 // than the host app's copy (Node resolves a symlinked package's
@@ -29,23 +37,26 @@ const actionUId = getPluginEntityUid('action');
 // fails that check and gets masked as an opaque 500 instead of a proper 400.
 // Letting entityValidator's own throw propagate avoids the mismatch entirely,
 // since that error is always constructed from the app's own @strapi/strapi
-// (never symlinked), matching what the middleware checks against.
+// (never symlinked), matching what the middleware checks against. This only
+// matters for the media fallback below, where there's no entityValidator
+// check to delegate to at all - constructing our own error there is
+// unavoidable, and works correctly in a real (non-linked) install.
 const blankOutMissingRequiredFields = ({ strapi, contentType, data }) => {
 	const schema = createContentTypePresenceSchema(contentType.attributes, strapi.components);
 
 	try {
 		schema.validateSync(data, { abortEarly: false });
-		return data;
+		return { sanitizedData: data, hadPresenceIssues: false };
 	} catch (error) {
-		const sanitized = _.cloneDeep(data);
+		const sanitizedData = _.cloneDeep(data);
 
 		error.inner.forEach((fieldError) => {
 			if (fieldError.path) {
-				_.set(sanitized, fieldError.path, undefined);
+				_.set(sanitizedData, fieldError.path, undefined);
 			}
 		});
 
-		return sanitized;
+		return { sanitizedData, hadPresenceIssues: true };
 	}
 };
 
@@ -130,7 +141,11 @@ const validateIfScheduled = async ({ strapi, uid, entityId, params }) => {
 		populate: getDeepPopulate(uid, {}),
 	});
 	const mergedData = { ...existingEntity, ...params.data };
-	const sanitizedData = blankOutMissingRequiredFields({ strapi, contentType, data: mergedData });
+	const { sanitizedData, hadPresenceIssues } = blankOutMissingRequiredFields({
+		strapi,
+		contentType,
+		data: mergedData,
+	});
 
 	try {
 		// "creation" semantics require every attribute to actually have a
@@ -143,6 +158,15 @@ const validateIfScheduled = async ({ strapi, uid, entityId, params }) => {
 			{ isDraft: false },
 			existingEntity
 		);
+
+		if (hadPresenceIssues) {
+			// our own presence check found something entityValidator doesn't
+			// have any check for at all regardless of value (media, see the
+			// comment above `blankOutMissingRequiredFields`), so it let the
+			// blanked-out data through - there's no entityValidator error to
+			// piggyback on here, so this is thrown directly
+			throw new errors.ValidationError(SAVE_BLOCKED_MESSAGE);
+		}
 	} catch (error) {
 		// re-throw the same error instance rather than wrapping it in a new
 		// one, so it stays `instanceof` the app's own error classes - see the
@@ -150,8 +174,7 @@ const validateIfScheduled = async ({ strapi, uid, entityId, params }) => {
 		// The message is replaced rather than appended to, since the admin
 		// has no way to highlight the specific fields this refers to - it
 		// would only show a raw field path with nothing to act on
-		error.message =
-			'Cannot save: a publish is scheduled for this entry, and one or more required fields are missing or empty.';
+		error.message = SAVE_BLOCKED_MESSAGE;
 		throw error;
 	}
 };
