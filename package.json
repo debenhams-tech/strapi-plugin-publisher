@@ -5,7 +5,8 @@
 	"description": "A plugin for Strapi Headless CMS that provides the ability to schedule publishing for any content type.",
 	"scripts": {
 		"lint": "eslint . --fix",
-		"format": "prettier --write **/*.{ts,js,json,yml}"
+		"format": "prettier --write **/*.{ts,js,json,yml}",
+		"test": "jest"
 	},
 	"author": {
 		"name": "@ComfortablyCoding",
@@ -48,6 +49,7 @@
 		"eslint-config-prettier": "^9.0.0",
 		"eslint-plugin-node": "^11.1.0",
 		"eslint-plugin-react": "^7.33.2",
+		"jest": "^29.7.0",
 		"prettier": "^3.1.0"
 	},
 	"peerDependencies": {
