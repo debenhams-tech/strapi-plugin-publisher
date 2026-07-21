@@ -5,7 +5,6 @@ import { usePublisher } from '../../hooks/usePublisher';
 import { Stack } from '@strapi/design-system';
 import ActionTimePicker from './ActionDateTimePicker';
 import ActionButtons from './ActionButtons/ActionButtons';
-import { ValidationError } from 'yup';
 import { getTrad } from '../../utils/getTrad';
 import { createYupSchema } from '../../utils/schema';
 
@@ -70,20 +69,61 @@ const Action = ({ mode, entityId, entitySlug }) => {
 		setExecuteAt(date);
 	}
 
-	function handleOnEdit() {
+	async function isReadyToPublish() {
+		if (mode !== 'publish' || !schema) {
+			return true;
+		}
+
+		const isPageValid = await schema.isValid(entity.modifiedData);
+
+		if (!isPageValid) {
+			toggleNotification({
+				type: 'warning',
+				message: {
+					id: getTrad('action.notification.publish.validation.incomplete'),
+					defaultMessage: 'Required fields must be completed before a publish date can be set',
+				},
+			});
+			return false;
+		}
+
+		const isSavedValid = await schema.isValid(entity.initialData);
+
+		if (!isSavedValid) {
+			toggleNotification({
+				type: 'warning',
+				message: {
+					id: getTrad('action.notification.publish.validation.unsaved'),
+					defaultMessage:
+						'Save your changes before a publish date can be set — the scheduled publish uses the last saved version',
+				},
+			});
+			return false;
+		}
+
+		return true;
+	}
+
+	async function handleOnEdit() {
+		if (!(await isReadyToPublish())) {
+			return;
+		}
 		setIsCreating(true);
 		setIsEditing(false);
 	}
 
-	function handleOnCreate() {
+	async function handleOnCreate() {
+		if (!(await isReadyToPublish())) {
+			return;
+		}
 		setIsCreating(true);
 	}
 
 	async function handleOnSave() {
 		setIsLoading(true);
 		try {
-			if (mode === 'publish' && schema) {
-				await schema.validate(entity.initialData, { abortEarly: false });
+			if (!(await isReadyToPublish())) {
+				return;
 			}
 
 			if (!actionId) {
@@ -104,15 +144,6 @@ const Action = ({ mode, entityId, entitySlug }) => {
 			setIsCreating(false);
 			setIsEditing(true);
 		} catch (error) {
-			if (error instanceof ValidationError) {
-				toggleNotification({
-					type: 'warning',
-					message: {
-						id: getTrad('action.notification.publish.validation.error'),
-						defaultMessage: 'Required fields must be saved before a publish date can be set',
-					},
-				});
-			}
 			console.error(error);
 		} finally {
 			setIsLoading(false);
