@@ -46,7 +46,7 @@ const blankOutMissingRequiredFields = ({ strapi, contentType, data }) => {
 
 	try {
 		schema.validateSync(data, { abortEarly: false });
-		return { sanitizedData: data, hadPresenceIssues: false };
+		return { sanitizedData: data, presenceErrors: [] };
 	} catch (error) {
 		const sanitizedData = _.cloneDeep(data);
 
@@ -56,7 +56,16 @@ const blankOutMissingRequiredFields = ({ strapi, contentType, data }) => {
 			}
 		});
 
-		return { sanitizedData, hadPresenceIssues: true };
+		// same shape @strapi/utils' own formatYupErrors produces (path as an
+		// array, via lodash's toPath rather than yup's plain string path), so
+		// this merges cleanly with entityValidator's own details.errors below
+		const presenceErrors = error.inner.map((fieldError) => ({
+			path: _.toPath(fieldError.path),
+			message: fieldError.message,
+			name: fieldError.name,
+		}));
+
+		return { sanitizedData, presenceErrors };
 	}
 };
 
@@ -141,11 +150,13 @@ const validateIfScheduled = async ({ strapi, uid, entityId, params }) => {
 		populate: getDeepPopulate(uid, {}),
 	});
 	const mergedData = { ...existingEntity, ...params.data };
-	const { sanitizedData, hadPresenceIssues } = blankOutMissingRequiredFields({
+	const { sanitizedData, presenceErrors } = blankOutMissingRequiredFields({
 		strapi,
 		contentType,
 		data: mergedData,
 	});
+
+	let entityValidatorError = null;
 
 	try {
 		// "creation" semantics require every attribute to actually have a
@@ -158,24 +169,48 @@ const validateIfScheduled = async ({ strapi, uid, entityId, params }) => {
 			{ isDraft: false },
 			existingEntity
 		);
-
-		if (hadPresenceIssues) {
-			// our own presence check found something entityValidator doesn't
-			// have any check for at all regardless of value (media, see the
-			// comment above `blankOutMissingRequiredFields`), so it let the
-			// blanked-out data through - there's no entityValidator error to
-			// piggyback on here, so this is thrown directly
-			throw new errors.ValidationError(SAVE_BLOCKED_MESSAGE);
-		}
 	} catch (error) {
-		// re-throw the same error instance rather than wrapping it in a new
-		// one, so it stays `instanceof` the app's own error classes - see the
-		// note above `blankOutMissingRequiredFields` for why that matters.
-		// The message is replaced rather than appended to, since the admin
-		// has no way to highlight the specific fields this refers to - it
-		// would only show a raw field path with nothing to act on
-		error.message = SAVE_BLOCKED_MESSAGE;
-		throw error;
+		entityValidatorError = error;
+	}
+
+	if (entityValidatorError) {
+		const entityValidatorPaths = new Set(
+			((entityValidatorError.details && entityValidatorError.details.errors) || []).map((fieldError) =>
+				fieldError.path.join('.')
+			)
+		);
+
+		// only add presence errors entityValidator didn't already catch
+		// itself once blanked out (e.g. a missing image alongside a missing
+		// title) - otherwise every string/array field it *does* have a
+		// working required check for would end up listed twice, once with
+		// entityValidator's own wording and once with yup's
+		const newPresenceErrors = presenceErrors.filter(
+			(fieldError) => !entityValidatorPaths.has(fieldError.path.join('.'))
+		);
+
+		// mutate and re-throw the same error instance rather than
+		// constructing a new one, so it stays `instanceof` the app's own
+		// error classes - see the note above `blankOutMissingRequiredFields`
+		// for why that matters. The top-level message is replaced rather
+		// than appended to, since the admin has no way to highlight the
+		// fields details.errors refers to - it would only show a raw field
+		// path with nothing to act on
+		entityValidatorError.details = {
+			errors: [...((entityValidatorError.details && entityValidatorError.details.errors) || []), ...newPresenceErrors],
+		};
+		entityValidatorError.message = SAVE_BLOCKED_MESSAGE;
+		throw entityValidatorError;
+	}
+
+	if (presenceErrors.length) {
+		// entityValidator's own pass didn't throw at all - this happens for
+		// things it has no required check for regardless of value (media,
+		// see the comment above `blankOutMissingRequiredFields`), so there's
+		// no existing app-instance error to piggyback on here. Constructing
+		// our own is unavoidable, and works correctly in a real (non-linked)
+		// install - see the same comment for the npm link caveat
+		throw new errors.ValidationError(SAVE_BLOCKED_MESSAGE, { errors: presenceErrors });
 	}
 };
 
