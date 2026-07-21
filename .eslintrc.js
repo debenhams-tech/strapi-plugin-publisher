@@ -24,5 +24,11 @@ module.exports = {
 			files: ['admin/**/*'],
 			...frontendESLint,
 		},
+		{
+			files: ['**/*.test.js'],
+			env: {
+				jest: true,
+			},
+		},
 	],
 };
