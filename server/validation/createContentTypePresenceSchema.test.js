@@ -124,4 +124,27 @@ describe('createContentTypePresenceSchema', () => {
 		expect(validate(schema, withMissingImage)).toEqual(['content[0].gallery[1].image']);
 		expect(validate(schema, withAllImages)).toEqual([]);
 	});
+
+	it('does not flag required fields inside an optional non-repeatable component that is entirely absent', () => {
+		const components = {
+			'shared.video-src': {
+				attributes: {
+					desktop_url: { type: 'string', required: true },
+					mobile_url: { type: 'string', required: true },
+				},
+			},
+		};
+		const schema = createContentTypePresenceSchema(
+			{ heroBannerVideoSrc: { type: 'component', component: 'shared.video-src' } },
+			components
+		);
+
+		// null and "key not present at all" (undefined) both mean "not used" for
+		// an optional component - neither should surface the nested required
+		// fields of a component the entity never populated
+		expect(validate(schema, { heroBannerVideoSrc: null })).toEqual([]);
+		expect(validate(schema, {})).toEqual([]);
+		expect(validate(schema, { heroBannerVideoSrc: { desktop_url: 'a', mobile_url: 'b' } })).toEqual([]);
+		expect(validate(schema, { heroBannerVideoSrc: { desktop_url: 'a' } })).toEqual(['heroBannerVideoSrc.mobile_url']);
+	});
 });

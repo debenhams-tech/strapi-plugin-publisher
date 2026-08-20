@@ -107,7 +107,13 @@ const buildComponentSchema = (attributes, componentsByUid, depth = 0) => {
 		shape[name] = buildFieldSchema(attribute, componentsByUid, depth);
 	});
 
-	return yup.object().shape(shape);
+	// Without this, an absent (`undefined`) value for this schema still gets
+	// cast to yup's generated default object (each shape key defaulted, e.g.
+	// `{ a: undefined }`) rather than staying `undefined` - an object, so
+	// nested `.required()` checks fire even though the field itself is
+	// legitimately missing. `.nullable()` alone (set by callers on optional
+	// components) only special-cases `null`, not `undefined`.
+	return yup.object().shape(shape).default(undefined);
 };
 
 const createContentTypePresenceSchema = (attributes, componentsByUid) =>
